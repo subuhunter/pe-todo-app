@@ -1,0 +1,168 @@
+#!/bin/bash
+# Bootstraps an Amazon Linux 2023 web server.
+#
+# This runs exactly once, on first boot, as root. Output lands in
+# /var/log/cloud-init-output.log on the instance.
+#
+# Deliberately not `set -e`: a transient mirror failure during `dnf update`
+# should not stop httpd from ever starting. Each step logs its own outcome.
+set -uxo pipefail
+
+REGION="${region}"
+BUCKET="${s3_bucket}"
+LOG_GROUP="${log_group_name}"
+SERVER="${server_name}"
+
+# ---------------------------------------------------------------------------
+# Instance identity, via IMDSv2. The module sets http_tokens = "required", so
+# an unauthenticated GET to 169.254.169.254 returns 401 — a token comes first.
+# ---------------------------------------------------------------------------
+IMDS="http://169.254.169.254/latest"
+TOKEN=$(curl -sS -m 5 -X PUT "$IMDS/api/token" -H "X-aws-ec2-metadata-token-ttl-seconds: 300")
+META="curl -sS -m 5 -H X-aws-ec2-metadata-token:$TOKEN"
+
+INSTANCE_ID=$($META "$IMDS/meta-data/instance-id")
+AZ=$($META "$IMDS/meta-data/placement/availability-zone")
+PRIVATE_IP=$($META "$IMDS/meta-data/local-ipv4")
+
+# ---------------------------------------------------------------------------
+# Web server (task requirement 5)
+# ---------------------------------------------------------------------------
+dnf -y update
+dnf -y install httpd cronie
+
+cat > /var/www/html/index.html <<HTML
+<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8"><title>$SERVER</title>
+<style>
+  body { font-family: system-ui, sans-serif; margin: 4rem auto; max-width: 40rem; line-height: 1.6; }
+  h1 { margin-bottom: 0; }
+  dt { font-weight: 600; margin-top: .75rem; }
+  code { background: #f4f4f5; padding: .1rem .3rem; border-radius: 3px; }
+</style>
+</head>
+<body>
+  <h1>$SERVER</h1>
+  <p>Served from a private subnet, reached through the Application Load Balancer.</p>
+  <dl>
+    <dt>Instance ID</dt><dd><code>$INSTANCE_ID</code></dd>
+    <dt>Availability Zone</dt><dd><code>$AZ</code></dd>
+    <dt>Private IP</dt><dd><code>$PRIVATE_IP</code></dd>
+    <dt>Public IP</dt><dd>none &mdash; this host is not internet-addressable</dd>
+  </dl>
+  <p>Reload a few times: the ALB alternates between availability zones.</p>
+</body>
+</html>
+HTML
+
+# The ALB health check target. A plain 200 is all the check needs.
+echo "OK" > /var/www/html/health
+
+systemctl enable --now httpd
+systemctl enable --now crond
+
+# ---------------------------------------------------------------------------
+# S3 (task requirement 6)
+#
+# Credentials come from the instance profile via IMDS. There is no access key
+# anywhere on this host.
+# ---------------------------------------------------------------------------
+if ! command -v aws >/dev/null 2>&1; then
+  dnf -y install awscli-2 || dnf -y install aws-cli
+fi
+
+BOOT_REPORT=/tmp/boot-report.txt
+{
+  echo "server:      $SERVER"
+  echo "instance_id: $INSTANCE_ID"
+  echo "az:          $AZ"
+  echo "private_ip:  $PRIVATE_IP"
+  echo "booted_at:   $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+  echo "httpd:       $(systemctl is-active httpd)"
+} > "$BOOT_REPORT"
+
+aws s3 cp "$BOOT_REPORT" "s3://$BUCKET/test/$SERVER-boot-report.txt" --region "$REGION"
+
+# Ship Apache logs to S3 every 5 minutes. Real deployments would use the
+# CloudWatch agent alone; this exists because the diagram calls for logs in
+# the bucket.
+cat > /usr/local/bin/sync-httpd-logs.sh <<SYNC
+#!/bin/bash
+aws s3 sync /var/log/httpd "s3://$BUCKET/logs/$SERVER/" --region "$REGION" --only-show-errors
+SYNC
+chmod 0755 /usr/local/bin/sync-httpd-logs.sh
+
+cat > /etc/cron.d/httpd-log-sync <<CRON
+*/5 * * * * root /usr/local/bin/sync-httpd-logs.sh >/dev/null 2>&1
+CRON
+chmod 0644 /etc/cron.d/httpd-log-sync
+
+# ---------------------------------------------------------------------------
+# CloudWatch agent (task requirement 7)
+#
+# EC2 publishes CPU, network and disk *I/O* for free. Memory and disk *used*
+# are invisible to the hypervisor and only exist if this agent reports them.
+# ---------------------------------------------------------------------------
+dnf -y install amazon-cloudwatch-agent
+
+# Quoted heredoc: the shell must not touch this. The aws:InstanceId
+# placeholder below is resolved by the CloudWatch agent itself at runtime, so
+# it is written doubled ($$) in the template to survive templatefile.
+cat > /opt/aws/amazon-cloudwatch-agent/etc/amazon-cloudwatch-agent.json <<'CWAGENT'
+{
+  "agent": {
+    "metrics_collection_interval": 60,
+    "run_as_user": "root"
+  },
+  "metrics": {
+    "namespace": "${cloudwatch_namespace}",
+    "append_dimensions": {
+      "InstanceId": "$${aws:InstanceId}"
+    },
+    "metrics_collected": {
+      "mem": {
+        "measurement": ["mem_used_percent"],
+        "metrics_collection_interval": 60
+      },
+      "disk": {
+        "measurement": ["used_percent"],
+        "resources": ["/"],
+        "metrics_collection_interval": 60
+      }
+    }
+  },
+  "logs": {
+    "logs_collected": {
+      "files": {
+        "collect_list": [
+          {
+            "file_path": "/var/log/httpd/access_log",
+            "log_group_name": "${log_group_name}",
+            "log_stream_name": "${server_name}/httpd/access",
+            "retention_in_days": -1
+          },
+          {
+            "file_path": "/var/log/httpd/error_log",
+            "log_group_name": "${log_group_name}",
+            "log_stream_name": "${server_name}/httpd/error",
+            "retention_in_days": -1
+          },
+          {
+            "file_path": "/var/log/cloud-init-output.log",
+            "log_group_name": "${log_group_name}",
+            "log_stream_name": "${server_name}/cloud-init",
+            "retention_in_days": -1
+          }
+        ]
+      }
+    }
+  }
+}
+CWAGENT
+
+/opt/aws/amazon-cloudwatch-agent/bin/amazon-cloudwatch-agent-ctl \
+  -a fetch-config -m ec2 -s \
+  -c file:/opt/aws/amazon-cloudwatch-agent/etc/amazon-cloudwatch-agent.json
+
+echo "bootstrap finished for $SERVER at $(date -u)"

@@ -1,0 +1,14 @@
+# Copy to terraform.tfvars and edit.
+#
+# state_bucket_name MUST match the `bucket` value in ../env/*/backend.tf.
+# One bucket holds all environments; they're separated by state key.
+# S3 bucket names are globally unique — suffix with your AWS account ID.
+
+state_bucket_name = "platform-demo-tfstate-123456789012"
+aws_region        = "ap-south-1"
+project_name      = "platform-demo"
+
+# Optional: customer-managed KMS key instead of SSE-S3.
+# kms_key_arn = "arn:aws:kms:ap-south-1:123456789012:key/abcd-1234"
+
+noncurrent_version_retention_days = 90

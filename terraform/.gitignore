@@ -1,0 +1,17 @@
+.terraform/
+*.tfstate
+*.tfstate.*
+*.tfstate.backup
+crash.log
+.terraformrc
+terraform.rc
+
+# Per-environment tfvars are committed on purpose (no secrets in them).
+# Anything else ending in .tfvars stays local.
+*.tfvars
+!env/*/terraform.tfvars
+!*.tfvars.example
+
+# .terraform.lock.hcl is deliberately NOT ignored. It pins the exact provider
+# build and its verified hashes, so every machine and CI runner resolves to
+# the same versions. Ignoring it defeats the point of having a lock file.

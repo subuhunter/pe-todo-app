@@ -1,0 +1,39 @@
+#!/bin/bash
+# Bastion host bootstrap. Deliberately minimal — the fewer packages on a
+# publicly reachable host, the smaller its attack surface.
+set -uxo pipefail
+
+dnf -y update
+
+# The SSM agent is preinstalled on Amazon Linux 2023 and gives you a shell
+# through Session Manager, with no inbound port and a full session audit
+# trail. Prefer it over SSH.
+systemctl enable --now amazon-ssm-agent
+
+# Deliberately references the private CIDRs rather than the web servers'
+# actual IPs: pulling those in would make this host's user_data depend on the
+# web tier, which already depends on this host's security group.
+cat > /etc/motd <<MOTD
+
+  ${name}
+  ------------------------------------------------------------------
+  Bastion host. Jump from here to the private web servers:
+
+      ssh -A ec2-user@<private-ip>
+
+  Web tier lives in: ${private_cidrs}
+
+  Find the instances from here with:
+
+      aws ec2 describe-instances --region ${region} \
+        --filters "Name=tag:Role,Values=web" \
+        --query "Reservations[].Instances[].[Tags[?Key=='Name']|[0].Value,PrivateIpAddress]" \
+        --output table
+
+  Use SSH agent forwarding (-A) from your laptop so no private key
+  ever lands on this host.
+  ------------------------------------------------------------------
+
+MOTD
+
+echo "bastion bootstrap finished at $(date -u)"
