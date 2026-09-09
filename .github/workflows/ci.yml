@@ -20,6 +20,10 @@ on:
       - 'next.config.mjs'
       - '.github/workflows/ci.yml'
   workflow_dispatch:
+  # Re-run code scanning weekly so new CodeQL queries are applied to
+  # code that hasn't changed. Only the analyze job runs on this trigger.
+  schedule:
+    - cron: '27 4 * * 1'
 
 # Only keep the newest run per branch/PR; cancel superseded ones.
 concurrency:
@@ -37,6 +41,7 @@ jobs:
   typecheck:
     name: Typecheck (src)
     runs-on: ubuntu-latest
+    if: github.event_name != 'schedule'
     steps:
       - uses: actions/checkout@v4
 
@@ -54,6 +59,7 @@ jobs:
   build:
     name: Build
     runs-on: ubuntu-latest
+    if: github.event_name != 'schedule'
     steps:
       - uses: actions/checkout@v4
 
@@ -86,3 +92,35 @@ jobs:
             .next
             !.next/cache
           retention-days: 7
+
+  codeql:
+    name: CodeQL (src)
+    runs-on: ubuntu-latest
+    # Overrides the workflow-level read-only default: uploading results
+    # to the Security tab needs security-events: write.
+    permissions:
+      contents: read
+      actions: read
+      security-events: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Initialize CodeQL
+        uses: github/codeql-action/init@v3
+        with:
+          languages: javascript-typescript
+          queries: security-and-quality
+          # Analyze application source only; skip generated and vendored code.
+          config: |
+            paths:
+              - src
+            paths-ignore:
+              - node_modules
+              - .next
+
+      # javascript-typescript is an interpreted language for CodeQL:
+      # it is scanned straight from source, so no build step is needed.
+      - name: Perform CodeQL analysis
+        uses: github/codeql-action/analyze@v3
+        with:
+          category: '/language:javascript-typescript'
