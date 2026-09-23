@@ -5,6 +5,10 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 /** @type {import('next').NextConfig} */
 const nextConfig = {
+  // Emit a standalone server bundle so the Docker runtime image only needs
+  // the traced dependencies.
+  output: "standalone",
+
   // A stray lockfile in a parent directory makes Next.js infer the wrong
   // workspace root, so pin it to this project.
   outputFileTracingRoot: __dirname,
