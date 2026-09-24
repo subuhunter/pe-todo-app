@@ -1,0 +1,107 @@
+name: PR Checks
+
+# Validation only. Nothing here publishes an image or deploys — that is
+# ci.yml's job, which runs on push to main.
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - 'src/**'
+      - 'package.json'
+      - 'package-lock.json'
+      - 'tsconfig.json'
+      - 'next.config.mjs'
+      - 'Dockerfile'
+      - '.dockerignore'
+      - '.github/workflows/pr.yml'
+
+# A new push to the PR branch makes the in-flight run obsolete; cancel it.
+concurrency:
+  group: pr-${{ github.workflow }}-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  NODE_VERSION: '20.x'
+  NEXT_TELEMETRY_DISABLED: '1'
+
+jobs:
+  typecheck:
+    name: Typecheck (src)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: tsc --noEmit
+        run: npm run typecheck
+
+  build:
+    name: Build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      # Reuse Next's compiler cache across runs, keyed on source + deps.
+      - name: Restore Next.js build cache
+        uses: actions/cache@v4
+        with:
+          path: .next/cache
+          key: ${{ runner.os }}-next-${{ hashFiles('package-lock.json') }}-${{ hashFiles('src/**/*.ts', 'src/**/*.tsx', 'src/**/*.css') }}
+          restore-keys: |
+            ${{ runner.os }}-next-${{ hashFiles('package-lock.json') }}-
+            ${{ runner.os }}-next-
+
+      # No artifact upload: this build exists to prove the PR compiles,
+      # and the image published from main is built from the Dockerfile.
+      - name: Build
+        run: npm run build
+
+  codeql:
+    name: CodeQL (src)
+    runs-on: ubuntu-latest
+    # Overrides the workflow-level read-only default: uploading results
+    # to the Security tab needs security-events: write.
+    permissions:
+      contents: read
+      actions: read
+      security-events: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Initialize CodeQL
+        uses: github/codeql-action/init@v3
+        with:
+          languages: javascript-typescript
+          queries: security-and-quality
+          # Analyze application source only; skip generated and vendored code.
+          config: |
+            paths:
+              - src
+            paths-ignore:
+              - node_modules
+              - .next
+
+      # javascript-typescript is an interpreted language for CodeQL:
+      # it is scanned straight from source, so no build step is needed.
+      - name: Perform CodeQL analysis
+        uses: github/codeql-action/analyze@v3
+        with:
+          category: '/language:javascript-typescript'
