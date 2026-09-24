@@ -3,15 +3,6 @@ name: CI
 on:
   push:
     branches: [main]
-    paths:
-      - 'src/**'
-      - 'package.json'
-      - 'package-lock.json'
-      - 'tsconfig.json'
-      - 'next.config.mjs'
-      - 'Dockerfile'
-      - '.dockerignore'
-      - '.github/workflows/ci.yml'
   workflow_dispatch:
 
 # Only keep the newest run per branch/PR; cancel superseded ones.
