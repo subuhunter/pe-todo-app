@@ -12,17 +12,6 @@ on:
       - 'Dockerfile'
       - '.dockerignore'
       - '.github/workflows/ci.yml'
-  pull_request:
-    branches: [main]
-    paths:
-      - 'src/**'
-      - 'package.json'
-      - 'package-lock.json'
-      - 'tsconfig.json'
-      - 'next.config.mjs'
-      - 'Dockerfile'
-      - '.dockerignore'
-      - '.github/workflows/ci.yml'
   workflow_dispatch:
 
 # Only keep the newest run per branch/PR; cancel superseded ones.
@@ -43,9 +32,6 @@ jobs:
   typecheck:
     name: Typecheck (src)
     runs-on: ubuntu-latest
-    # Already validated on the pull request that introduced this commit;
-    # re-running on the merge to main proves nothing new.
-    if: github.event_name != 'push'
     steps:
       - uses: actions/checkout@v4
 
@@ -63,9 +49,6 @@ jobs:
   build:
     name: Build
     runs-on: ubuntu-latest
-    # Already validated on the pull request that introduced this commit;
-    # re-running on the merge to main proves nothing new.
-    if: github.event_name != 'push'
     steps:
       - uses: actions/checkout@v4
 
@@ -102,9 +85,6 @@ jobs:
   codeql:
     name: CodeQL (src)
     runs-on: ubuntu-latest
-    # Already validated on the pull request that introduced this commit;
-    # re-running on the merge to main proves nothing new.
-    if: github.event_name != 'push'
     # Overrides the workflow-level read-only default: uploading results
     # to the Security tab needs security-events: write.
     permissions:
@@ -139,9 +119,6 @@ jobs:
     runs-on: ubuntu-latest
     # A type error should never reach a published image.
     needs: typecheck
-    # typecheck is skipped on push to main, and a skipped dependency
-    # would otherwise skip this job as well.
-    if: ${{ !failure() && !cancelled() }}
     # Overrides the workflow-level read-only default: pushing to GHCR
     # needs packages: write.
     permissions:
